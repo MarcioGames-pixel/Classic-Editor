@@ -1,4 +1,5 @@
 import java.io.*;
+import java.util.zip.GZIPInputStream;
 import java.net.*;
 
 public class SerializationReader {

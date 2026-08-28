@@ -1,6 +1,8 @@
 import java.io.*;
 import java.lang.reflect.*;
+import java.net.*;
 import java.util.*;
+import java.util.jar.*;
 
 public class ClassicEditor {
 
@@ -11,6 +13,11 @@ public class ClassicEditor {
     static File jarFile;
 
     static Scanner sc = new Scanner(System.in);
+    
+   static List<Class<?>> cachedEntityClasses =
+    new ArrayList<Class<?>>();
+
+static boolean entityClassesLoaded = false;
 
     // =========================================================
     // MAIN
@@ -1105,8 +1112,9 @@ public class ClassicEditor {
         return;
     }
 
-    Collection<?> collection =
-        (Collection<?>) list;
+    @SuppressWarnings("unchecked")
+Collection<Object> collection =
+    (Collection<Object>) list;
 
     System.out.println(
         "Entities: " +
@@ -1206,64 +1214,80 @@ public class ClassicEditor {
     // ENTITY MENU
     // =========================================================
 
-    static void entityMenu(
-            Collection<?> collection
-    ) throws Exception {
+   static void entityMenu(
+        Collection<Object> collection
+) throws Exception {
 
-        while (true) {
+    while (true) {
 
-            System.out.println();
-            System.out.println(
-                "========== ENTITY EDITOR =========="
-            );
+        System.out.println();
+        System.out.println(
+            "========== ENTITY EDITOR =========="
+        );
 
-            System.out.println(
-                "1 - Edit entity"
-            );
+        System.out.println(
+            "1 - Edit entity"
+        );
 
-            System.out.println(
-                "2 - Remove entity"
-            );
+        System.out.println(
+            "2 - Spawn entity"
+        );
 
-            System.out.println(
-                "3 - Show entity classes"
-            );
+        System.out.println(
+            "3 - Change entity class"
+        );
 
-            System.out.println(
-                "0 - Back"
-            );
+        System.out.println(
+            "4 - Remove entity"
+        );
 
-            System.out.print(
-                "Select: "
-            );
+        System.out.println(
+            "5 - Show entity classes"
+        );
 
-            String op =
-                sc.nextLine().trim();
+        System.out.println(
+            "0 - Back"
+        );
 
-            switch (op) {
+        System.out.print(
+            "Select: "
+        );
 
-                case "1":
-                    editEntity(collection);
-                    break;
+        String op =
+            sc.nextLine().trim();
 
-                case "2":
-                    removeEntity(collection);
-                    break;
+        switch (op) {
 
-                case "3":
-                    showEntityClasses(collection);
-                    break;
+            case "1":
+                editEntity(collection);
+                break;
 
-                case "0":
-                    return;
+            case "2":
+                spawnEntity(collection);
+                break;
 
-                default:
-                    System.out.println(
-                        "Invalid option."
-                    );
-            }
+            case "3":
+                changeEntityClass(collection);
+                break;
+
+            case "4":
+                removeEntity(collection);
+                break;
+
+            case "5":
+                showEntityClasses(collection);
+                break;
+
+            case "0":
+                return;
+
+            default:
+                System.out.println(
+                    "Invalid option."
+                );
         }
     }
+}
 
     // =========================================================
     // EDIT ENTITY
@@ -1709,31 +1733,1087 @@ public class ClassicEditor {
         }
     }
 
-    // =========================================================
-    // ENTITY CLASSES
-    // =========================================================
+// =========================================================
+// ENTITY CLASS DISCOVERY
+// =========================================================
 
-    static void showEntityClasses(
-            Collection<?> collection
-    ) {
+static List<Class<?>> getEntityClasses()
+        throws Exception {
 
-        Set<String> classes =
-            new TreeSet<String>();
+    if (entityClassesLoaded)
+        return cachedEntityClasses;
+
+    cachedEntityClasses.clear();
+
+    Set<String> names =
+        new TreeSet<String>();
+
+    /*
+     * Primeiro tenta encontrar classes diretamente
+     * dentro do JAR fornecido.
+     */
+    JarFile jar =
+        new JarFile(jarFile);
+
+    try {
+
+        Enumeration<JarEntry> entries =
+            jar.entries();
+
+        while (entries.hasMoreElements()) {
+
+            JarEntry entry =
+                entries.nextElement();
+
+            if (entry.isDirectory())
+                continue;
+
+            String name =
+                entry.getName();
+
+            if (!name.endsWith(".class"))
+                continue;
+
+            if (name.indexOf('$') >= 0)
+                continue;
+
+            name =
+                name.substring(
+                    0,
+                    name.length() - 6
+                );
+
+            name =
+                name.replace('/', '.');
+
+            names.add(name);
+        }
+
+    } finally {
+
+        jar.close();
+    }
+
+    /*
+     * Descobre a classe base das entidades.
+     *
+     * Usamos uma entidade que já existe no mundo
+     * quando possível.
+     */
+    Class<?> entityBase =
+        findEntityBaseClass();
+
+    URL[] urls = {
+        jarFile.toURI().toURL()
+    };
+
+    URLClassLoader loader =
+        new URLClassLoader(
+            urls,
+            ClassicEditor.class.getClassLoader()
+        );
+
+    try {
+
+        for (String name : names) {
+
+            try {
+
+                Class<?> clazz =
+                    Class.forName(
+                        name,
+                        false,
+                        loader
+                    );
+
+                if (clazz.isInterface())
+                    continue;
+
+                if (Modifier.isAbstract(
+                        clazz.getModifiers()))
+                    continue;
+
+                if (entityBase != null) {
+
+                    if (!entityBase.isAssignableFrom(
+                            clazz))
+                        continue;
+                }
+
+                /*
+                 * Evita adicionar a própria classe base.
+                 */
+                if (clazz == entityBase)
+                    continue;
+
+                cachedEntityClasses.add(clazz);
+
+            } catch (Throwable ignored) {
+                /*
+                 * Muitas classes antigas do Minecraft
+                 * podem depender de classes que não precisam
+                 * ser carregadas durante a descoberta.
+                 */
+            }
+        }
+
+    } finally {
+
+        try {
+            loader.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /*
+     * Ordena alfabeticamente pelo nome.
+     */
+    Collections.sort(
+        cachedEntityClasses,
+        new Comparator<Class<?>>() {
+
+            public int compare(
+                    Class<?> a,
+                    Class<?> b
+            ) {
+
+                return a.getName().compareTo(
+                    b.getName()
+                );
+            }
+        }
+    );
+
+    entityClassesLoaded = true;
+
+    return cachedEntityClasses;
+}
+
+static Class<?> findEntityBaseClass() {
+
+    try {
+
+        Object blockMap =
+            getField(level, "blockMap");
+
+        Object list =
+            getField(blockMap, "all");
+
+        if (!(list instanceof Collection))
+            return null;
+
+        Collection<?> collection =
+            (Collection<?>) list;
 
         for (Object entity : collection) {
 
-            classes.add(
-                entity.getClass().getName()
+            if (entity == null)
+                continue;
+
+            Class<?> c =
+                entity.getClass();
+
+            /*
+             * Subimos a hierarquia até encontrar
+             * uma classe suficientemente genérica.
+             *
+             * Normalmente isso acaba em Entity,
+             * Mob ou uma classe equivalente.
+             */
+            Class<?> candidate = c;
+
+            while (
+                candidate.getSuperclass() != null &&
+                candidate.getSuperclass() != Object.class
+            ) {
+
+                Class<?> parent =
+                    candidate.getSuperclass();
+
+                if (parent.getName().toLowerCase()
+                        .indexOf("entity") >= 0) {
+
+                    candidate = parent;
+                    break;
+                }
+
+                candidate = parent;
+            }
+
+            return candidate;
+        }
+
+    } catch (Throwable ignored) {
+    }
+
+    return null;
+}
+
+static Class<?> selectEntityClass()
+        throws Exception {
+
+    List<Class<?>> classes =
+        getEntityClasses();
+
+    if (classes.isEmpty()) {
+
+        System.out.println(
+            "No entity classes found in JAR."
+        );
+
+        return null;
+    }
+
+    System.out.println();
+    System.out.println(
+        "========== AVAILABLE ENTITIES =========="
+    );
+
+    for (int i = 0; i < classes.size(); i++) {
+
+        Class<?> c =
+            classes.get(i);
+
+        System.out.printf(
+            "%3d - %s%n",
+            i,
+            simpleEntityName(c)
+        );
+    }
+
+    System.out.println();
+    System.out.print(
+        "Select class: "
+    );
+
+    int index;
+
+    try {
+
+        index =
+            Integer.parseInt(
+                sc.nextLine().trim()
+            );
+
+    } catch (NumberFormatException e) {
+
+        System.out.println(
+            "Invalid class."
+        );
+
+        return null;
+    }
+
+    if (
+        index < 0 ||
+        index >= classes.size()
+    ) {
+
+        System.out.println(
+            "Invalid class."
+        );
+
+        return null;
+    }
+
+    return classes.get(index);
+}
+
+static String simpleEntityName(
+        Class<?> clazz
+) {
+
+    String name =
+        clazz.getSimpleName();
+
+    if (
+        name == null ||
+        name.length() == 0
+    ) {
+
+        name =
+            clazz.getName();
+
+        int p =
+            name.lastIndexOf('.');
+
+        if (p >= 0)
+            name =
+                name.substring(p + 1);
+    }
+
+    return name;
+}
+
+// =========================================================
+// SPAWN ENTITY
+// =========================================================
+
+static void spawnEntity(
+        Collection<Object> collection
+) throws Exception {
+
+    Class<?> clazz =
+        selectEntityClass();
+
+    if (clazz == null)
+        return;
+
+    System.out.println();
+    System.out.println(
+        "Spawning: " +
+        simpleEntityName(clazz)
+    );
+
+    System.out.print("X: ");
+
+    float x;
+
+    try {
+
+        x =
+            Float.parseFloat(
+                sc.nextLine().trim()
+            );
+
+    } catch (NumberFormatException e) {
+
+        System.out.println(
+            "Invalid X."
+        );
+
+        return;
+    }
+
+    System.out.print("Y: ");
+
+    float y;
+
+    try {
+
+        y =
+            Float.parseFloat(
+                sc.nextLine().trim()
+            );
+
+    } catch (NumberFormatException e) {
+
+        System.out.println(
+            "Invalid Y."
+        );
+
+        return;
+    }
+
+    System.out.print("Z: ");
+
+    float z;
+
+    try {
+
+        z =
+            Float.parseFloat(
+                sc.nextLine().trim()
+            );
+
+    } catch (NumberFormatException e) {
+
+        System.out.println(
+            "Invalid Z."
+        );
+
+        return;
+    }
+
+    Object entity;
+
+    try {
+
+        entity =
+            createEntity(clazz);
+
+    } catch (Throwable e) {
+
+        System.out.println();
+        System.out.println(
+            "[ERROR] Could not create entity."
+        );
+
+        System.out.println(
+            "Class: " +
+            clazz.getName()
+        );
+
+        System.out.println(
+            "Reason: " +
+            e
+        );
+
+        return;
+    }
+
+    if (entity == null) {
+
+        System.out.println(
+            "[ERROR] Entity constructor returned null."
+        );
+
+        return;
+    }
+
+    /*
+     * Define o mundo/level caso a classe possua
+     * um campo compatível.
+     */
+    setEntityLevel(entity);
+
+    /*
+     * Define posição.
+     */
+    setFloatSafe(
+        entity,
+        "x",
+        x
+    );
+
+    setFloatSafe(
+        entity,
+        "y",
+        y
+    );
+
+    setFloatSafe(
+        entity,
+        "z",
+        z
+    );
+
+    /*
+     * Alguns Entity antigos possuem métodos
+     * específicos para posição.
+     */
+    trySetPositionMethod(
+        entity,
+        x,
+        y,
+        z
+    );
+
+    /*
+     * Adiciona ao BlockMap.
+     */
+    try {
+
+        collection.add(entity);
+
+    } catch (UnsupportedOperationException e) {
+
+        System.out.println(
+            "[ERROR] Entity collection cannot be modified."
+        );
+
+        return;
+    }
+
+    System.out.println();
+    System.out.println(
+        "[OK] Entity spawned:"
+    );
+
+    System.out.println(
+        simpleEntityName(clazz)
+    );
+
+    System.out.println(
+        "Position: " +
+        x + ", " +
+        y + ", " +
+        z
+    );
+}
+
+// =========================================================
+// CREATE ENTITY
+// =========================================================
+
+static Object createEntity(
+        Class<?> clazz
+) throws Exception {
+
+    Constructor<?>[] constructors =
+        clazz.getDeclaredConstructors();
+
+    /*
+     * Primeiro tentamos construtores que recebem
+     * o Level/World atual.
+     */
+    for (
+        Constructor<?> constructor :
+        constructors
+    ) {
+
+        Class<?>[] params =
+            constructor.getParameterTypes();
+
+        if (params.length != 1)
+            continue;
+
+        if (
+            level != null &&
+            params[0].isAssignableFrom(
+                level.getClass()
+            )
+        ) {
+
+            constructor.setAccessible(true);
+
+            return constructor.newInstance(
+                level
+            );
+        }
+    }
+
+    /*
+     * Alguns builds podem receber uma classe-base
+     * compatível com Level.
+     */
+    for (
+        Constructor<?> constructor :
+        constructors
+    ) {
+
+        Class<?>[] params =
+            constructor.getParameterTypes();
+
+        if (params.length != 1)
+            continue;
+
+        if (
+            level != null &&
+            isCompatibleParameter(
+                params[0],
+                level
+            )
+        ) {
+
+            constructor.setAccessible(true);
+
+            return constructor.newInstance(
+                level
+            );
+        }
+    }
+
+    /*
+     * Por último tentamos construtor vazio.
+     */
+    for (
+        Constructor<?> constructor :
+        constructors
+    ) {
+
+        if (
+            constructor.getParameterTypes().length == 0
+        ) {
+
+            constructor.setAccessible(true);
+
+            return constructor.newInstance();
+        }
+    }
+
+    throw new NoSuchMethodException(
+        "No compatible constructor found for " +
+        clazz.getName()
+    );
+}
+
+static boolean isCompatibleParameter(
+        Class<?> parameter,
+        Object value
+) {
+
+    if (value == null)
+        return !parameter.isPrimitive();
+
+    return parameter.isAssignableFrom(
+        value.getClass()
+    );
+}
+
+static void setEntityLevel(
+        Object entity
+) {
+
+    String[] possibleFields = {
+        "level",
+        "world",
+        "worldObj"
+    };
+
+    for (String field : possibleFields) {
+
+        try {
+
+            Field f =
+                findField(
+                    entity,
+                    field
+                );
+
+            if (
+                level != null &&
+                f.getType().isAssignableFrom(
+                    level.getClass()
+                )
+            ) {
+
+                f.set(
+                    entity,
+                    level
+                );
+
+                return;
+            }
+
+        } catch (Throwable ignored) {
+        }
+    }
+}
+
+static void trySetPositionMethod(
+        Object entity,
+        float x,
+        float y,
+        float z
+) {
+
+    try {
+
+        Method[] methods =
+            entity.getClass().getMethods();
+
+        for (Method method : methods) {
+
+            String name =
+                method.getName();
+
+            if (
+                !name.equals("setPosition") &&
+                !name.equals("setPos")
+            )
+                continue;
+
+            Class<?>[] params =
+                method.getParameterTypes();
+
+            if (params.length != 3)
+                continue;
+
+            if (
+                params[0] == Float.TYPE &&
+                params[1] == Float.TYPE &&
+                params[2] == Float.TYPE
+            ) {
+
+                method.setAccessible(true);
+
+                method.invoke(
+                    entity,
+                    Float.valueOf(x),
+                    Float.valueOf(y),
+                    Float.valueOf(z)
+                );
+
+                return;
+            }
+
+            if (
+                params[0] == Double.TYPE &&
+                params[1] == Double.TYPE &&
+                params[2] == Double.TYPE
+            ) {
+
+                method.setAccessible(true);
+
+                method.invoke(
+                    entity,
+                    Double.valueOf(x),
+                    Double.valueOf(y),
+                    Double.valueOf(z)
+                );
+
+                return;
+            }
+        }
+
+    } catch (Throwable ignored) {
+    }
+}
+
+// =========================================================
+// CHANGE ENTITY CLASS
+// =========================================================
+
+static void changeEntityClass(
+        Collection<Object> collection
+) throws Exception {
+
+    if (collection.isEmpty()) {
+
+        System.out.println(
+            "No entities."
+        );
+
+        return;
+    }
+
+    List<Object> entities =
+        new ArrayList<Object>();
+
+    for (Object e : collection)
+        entities.add(e);
+
+    System.out.println();
+
+    for (int i = 0; i < entities.size(); i++) {
+
+        Object entity =
+            entities.get(i);
+
+        System.out.printf(
+            "#%d - %s%n",
+            i,
+            entityType(entity)
+        );
+    }
+
+    System.out.println();
+
+    System.out.print(
+        "Entity number: "
+    );
+
+    int index;
+
+    try {
+
+        index =
+            Integer.parseInt(
+                sc.nextLine().trim()
+            );
+
+    } catch (NumberFormatException e) {
+
+        System.out.println(
+            "Invalid entity."
+        );
+
+        return;
+    }
+
+    if (
+        index < 0 ||
+        index >= entities.size()
+    ) {
+
+        System.out.println(
+            "Invalid entity."
+        );
+
+        return;
+    }
+
+    Object oldEntity =
+        entities.get(index);
+
+    System.out.println();
+
+    System.out.println(
+        "Current class: " +
+        oldEntity.getClass().getName()
+    );
+
+    Class<?> newClass =
+        selectEntityClass();
+
+    if (newClass == null)
+        return;
+
+    if (
+        newClass ==
+        oldEntity.getClass()
+    ) {
+
+        System.out.println(
+            "Entity already has this class."
+        );
+
+        return;
+    }
+
+    /*
+     * Guarda os dados da entidade antiga.
+     */
+    float x =
+        getFloatSafe(
+            oldEntity,
+            "x",
+            0.0F
+        );
+
+    float y =
+        getFloatSafe(
+            oldEntity,
+            "y",
+            0.0F
+        );
+
+    float z =
+        getFloatSafe(
+            oldEntity,
+            "z",
+            0.0F
+        );
+
+    float yRot =
+        getFloatSafe(
+            oldEntity,
+            "yRot",
+            0.0F
+        );
+
+    float xRot =
+        getFloatSafe(
+            oldEntity,
+            "xRot",
+            0.0F
+        );
+
+    Object newEntity;
+
+    try {
+
+        newEntity =
+            createEntity(newClass);
+
+    } catch (Throwable e) {
+
+        System.out.println();
+        System.out.println(
+            "[ERROR] Could not create new entity."
+        );
+
+        System.out.println(
+            "Reason: " +
+            e
+        );
+
+        return;
+    }
+
+    if (newEntity == null) {
+
+        System.out.println(
+            "[ERROR] New entity is null."
+        );
+
+        return;
+    }
+
+    setEntityLevel(newEntity);
+
+    /*
+     * Copia posição.
+     */
+    setFloatSafe(
+        newEntity,
+        "x",
+        x
+    );
+
+    setFloatSafe(
+        newEntity,
+        "y",
+        y
+    );
+
+    setFloatSafe(
+        newEntity,
+        "z",
+        z
+    );
+
+    /*
+     * Copia rotação.
+     */
+    setFloatSafe(
+        newEntity,
+        "yRot",
+        yRot
+    );
+
+    setFloatSafe(
+        newEntity,
+        "xRot",
+        xRot
+    );
+
+    trySetPositionMethod(
+        newEntity,
+        x,
+        y,
+        z
+    );
+
+    /*
+     * Tenta substituir a entidade.
+     */
+    try {
+
+        boolean removed =
+            collection.remove(
+                oldEntity
+            );
+
+        if (!removed) {
+
+            System.out.println(
+                "[ERROR] Could not remove old entity."
+            );
+
+            return;
+        }
+
+        try {
+
+            collection.add(
+                newEntity
+            );
+
+        } catch (Throwable addError) {
+
+            /*
+             * Se não conseguiu adicionar a nova,
+             * tenta devolver a antiga.
+             */
+            try {
+                collection.add(oldEntity);
+            } catch (Throwable ignored) {
+            }
+
+            System.out.println(
+                "[ERROR] Could not add new entity."
+            );
+
+            System.out.println(
+                "Reason: " +
+                addError
+            );
+
+            return;
+        }
+
+    } catch (UnsupportedOperationException e) {
+
+        System.out.println(
+            "[ERROR] Entity collection cannot be modified."
+        );
+
+        return;
+    }
+
+    /*
+     * Marca a antiga como removida quando possível.
+     */
+    try {
+
+        if (hasField(oldEntity, "removed")) {
+
+            setField(
+                oldEntity,
+                "removed",
+                Boolean.TRUE
             );
         }
 
-        System.out.println();
+    } catch (Throwable ignored) {
+    }
 
-        System.out.println(
-            "========== ENTITY CLASSES =========="
+    System.out.println();
+    System.out.println(
+        "[OK] Entity class changed."
+    );
+
+    System.out.println(
+        "Old: " +
+        oldEntity.getClass().getName()
+    );
+
+    System.out.println(
+        "New: " +
+        newEntity.getClass().getName()
+    );
+
+    System.out.println(
+        "Position preserved: " +
+        x + ", " +
+        y + ", " +
+        z
+    );
+}
+
+static float getFloatSafe(
+        Object object,
+        String field,
+        float defaultValue
+) {
+
+    try {
+
+        return getFloat(
+            object,
+            field
         );
 
-        for (String name : classes) {
+    } catch (Throwable e) {
+
+        return defaultValue;
+    }
+}
+
+static void showEntityClasses(
+        Collection<?> collection
+) {
+
+    System.out.println();
+
+    System.out.println(
+        "========== CURRENT ENTITY CLASSES =========="
+    );
+
+    Set<String> current =
+        new TreeSet<String>();
+
+    for (Object entity : collection) {
+
+        if (entity == null)
+            continue;
+
+        current.add(
+            entity.getClass().getName()
+        );
+    }
+
+    if (current.isEmpty()) {
+
+        System.out.println(
+            "No entities currently loaded."
+        );
+
+    } else {
+
+        for (String name : current) {
 
             System.out.println(
                 name
@@ -1741,8 +2821,51 @@ public class ClassicEditor {
         }
     }
 
-    // =========================================================
-    // SAFE FLOAT
+    System.out.println();
+
+    try {
+
+        List<Class<?>> available =
+            getEntityClasses();
+
+        System.out.println(
+            "========== AVAILABLE ENTITY CLASSES =========="
+        );
+
+        for (
+            int i = 0;
+            i < available.size();
+            i++
+        ) {
+
+            System.out.printf(
+                "%3d - %s%n",
+                i,
+                available.get(i).getName()
+            );
+        }
+
+        System.out.println();
+
+        System.out.println(
+            "Available classes: " +
+            available.size()
+        );
+
+    } catch (Throwable e) {
+
+        System.out.println(
+            "[WARN] Could not scan entity classes."
+        );
+
+        System.out.println(
+            "Reason: " +
+            e
+        );
+    }
+}
+
+
     // =========================================================
 
     static void setFloatSafe(
