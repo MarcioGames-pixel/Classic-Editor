@@ -24,10 +24,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build
-          New-Item -ItemType Directory -Force package
           New-Item -ItemType Directory -Force output
 
-          javac -encoding UTF-8 -cp "c0.30-1.jar" -d build `
+          javac -encoding UTF-8 --release 8 -cp "c0.30-1.jar" -d build `
             src/ClassicEditor.java `
             src/ClassicEditorGUI.java `
             src/LevelIO.java `
@@ -35,32 +34,133 @@ jobs:
             src/NBTReader.java `
             src/SerializationReader.java
 
-          jar cfe package/ClassicEditor.jar ClassicEditor -C build .
+          jar cfe output/ClassicEditor.jar ClassicEditor -C build .
 
       - name: Convert logo to ICO
         shell: pwsh
         run: |
           python -m pip install Pillow
 
-          python -c "from PIL import Image; Image.open('logo.png').convert('RGBA').save('ClassicEditor.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+          python -c "from PIL import Image; Image.open('logo.png').convert('RGBA').save('output/ClassicEditor.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
+      - name: Create launcher
+        shell: pwsh
+        run: |
+          @'
+          #include <windows.h>
+          #include <stdio.h>
+          #include <string.h>
+
+          int WINAPI WinMain(
+              HINSTANCE hInstance,
+              HINSTANCE hPrevInstance,
+              LPSTR lpCmdLine,
+              int nCmdShow
+          )
+          {
+              char exePath[MAX_PATH];
+              char directory[MAX_PATH];
+              char command[32768];
+
+              GetModuleFileNameA(
+                  NULL,
+                  exePath,
+                  MAX_PATH
+              );
+
+              strcpy(
+                  directory,
+                  exePath
+              );
+
+              char *slash =
+                  strrchr(
+                      directory,
+                      '\\'
+                  );
+
+              if (slash)
+                  *(slash + 1) = '\0';
+
+              snprintf(
+                  command,
+                  sizeof(command),
+                  "javaw.exe -jar \"%sClassicEditor.jar\"",
+                  directory
+              );
+
+              STARTUPINFOA si;
+              PROCESS_INFORMATION pi;
+
+              ZeroMemory(
+                  &si,
+                  sizeof(si)
+              );
+
+              ZeroMemory(
+                  &pi,
+                  sizeof(pi)
+              );
+
+              si.cb =
+                  sizeof(si);
+
+              if (!CreateProcessA(
+                      NULL,
+                      command,
+                      NULL,
+                      NULL,
+                      FALSE,
+                      0,
+                      NULL,
+                      directory,
+                      &si,
+                      &pi
+                  ))
+              {
+                  MessageBoxA(
+                      NULL,
+                      "Java was not found. Please install Java 8 or newer.",
+                      "ClassicEditor",
+                      MB_OK | MB_ICONERROR
+                  );
+
+                  return 1;
+              }
+
+              CloseHandle(pi.hThread);
+              CloseHandle(pi.hProcess);
+
+              return 0;
+          }
+          '@ | Set-Content launcher.c -Encoding ASCII
+
+      - name: Create icon resource
+        shell: pwsh
+        run: |
+          @'
+          1 ICON "output\ClassicEditor.ico"
+          '@ | Set-Content launcher.rc -Encoding ASCII
 
       - name: Build ClassicEditor.exe
         shell: pwsh
         run: |
-          jpackage `
-            --type app-image `
-            --name ClassicEditor `
-            --input package `
-            --main-jar ClassicEditor.jar `
-            --main-class ClassicEditor `
-            --icon ClassicEditor.ico `
-            --dest output
+          windres launcher.rc -O coff -o launcher.res
+          gcc launcher.c launcher.res -o output\ClassicEditor.exe -mwindows
+
+      - name: Copy dependency
+        shell: pwsh
+        run: |
+          Copy-Item "c0.30-1.jar" "output\c0.30-1.jar"
 
       - name: Create ZIP
         shell: pwsh
         run: |
           Compress-Archive `
-            -Path "output\ClassicEditor\*" `
+            -Path "output\ClassicEditor.exe",
+                  "output\ClassicEditor.jar",
+                  "output\ClassicEditor.ico",
+                  "output\c0.30-1.jar" `
             -DestinationPath "output\ClassicEditor-Windows.zip"
 
       - name: Upload
@@ -68,6 +168,8 @@ jobs:
         with:
           name: ClassicEditor-Windows
           path: |
-            package/ClassicEditor.jar
+            output/ClassicEditor.exe
+            output/ClassicEditor.jar
+            output/ClassicEditor.ico
+            output/c0.30-1.jar
             output/ClassicEditor-Windows.zip
-            ClassicEditor.ico
